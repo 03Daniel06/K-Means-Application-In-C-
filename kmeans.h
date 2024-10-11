@@ -1,8 +1,12 @@
 #ifndef KMEANS_H
 #define KMEANS_H
 
-#include <Eigen/Dense>
+#include <vector>
 #include <QWidget>
+
+struct DataPoint {
+    std::vector<double> coordinates;
+};
 
 class KMeans {
 public:
@@ -20,7 +24,7 @@ public:
 private:
     void generateData();
     void computeGroundTruthError();
-    void computeFriendMatrix(const Eigen::VectorXi &labels, Eigen::MatrixXi &friendMatrix);
+    void computeFriendMatrix(const std::vector<int>& labels, std::vector<std::vector<int>>& friendMatrix);
     void kMeansAlgorithm();
 
     int numClusters;
@@ -29,13 +33,13 @@ private:
     double standardDeviation;
     int numInitializations;
 
-    Eigen::MatrixXd trainData;
-    Eigen::MatrixXd testData;
-    Eigen::MatrixXd startPoints;
+    std::vector<DataPoint> trainData;
+    std::vector<DataPoint> testData;
+    std::vector<DataPoint> startPoints;
 
-    Eigen::VectorXi groundTruthLabels;
-    Eigen::VectorXi bestLabels;
-    Eigen::MatrixXd bestCentroids;
+    std::vector<int> groundTruthLabels;
+    std::vector<int> bestLabels;
+    std::vector<DataPoint> bestCentroids;
 
     double groundTruthError;
     double similarityMeasure;

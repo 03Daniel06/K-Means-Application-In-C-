@@ -1,14 +1,21 @@
 #include "kmeans.h"
 #include <QRandomGenerator>
-#include <QDebug>
+#include <QDateTime>
 #include <QtCharts>
+#include <cmath>
+#include <limits>
+#include <algorithm>
+#include <QHBoxLayout>
 
-KMeans::KMeans() {
-    numClusters = 3;
-    numPointsPerCluster = 50;
-    numDimensions = 2;
-    standardDeviation = 0.1;
-    numInitializations = 10;
+KMeans::KMeans()
+    : numClusters(3),
+      numPointsPerCluster(50),
+      numDimensions(2),
+      standardDeviation(0.1),
+      numInitializations(10),
+      groundTruthError(0.0),
+      similarityMeasure(0.0),
+      bestError(std::numeric_limits<double>::max()) {
 }
 
 void KMeans::setParameters(int clusters, int pointsPerCluster, int dimensions, double stdDev, int initializations) {
@@ -26,36 +33,49 @@ void KMeans::run() {
 }
 
 void KMeans::generateData() {
-    // Randomly generate cluster centers
-    QRandomGenerator randGen(QDateTime::currentMSecsSinceEpoch());
+    QRandomGenerator *randGen = QRandomGenerator::global();
 
-    startPoints = Eigen::MatrixXd::Random(numClusters, numDimensions);
-    trainData.resize(numClusters * numPointsPerCluster, numDimensions);
-    testData.resize(numClusters * numPointsPerCluster, numDimensions);
-    groundTruthLabels.resize(numClusters * numPointsPerCluster);
-
-    int index = 0;
+    // Generate random cluster centers (startPoints)
+    startPoints.clear();
     for (int i = 0; i < numClusters; ++i) {
-        Eigen::VectorXd startPoint = startPoints.row(i);
+        DataPoint center;
+        center.coordinates.resize(numDimensions);
+        for (int d = 0; d < numDimensions; ++d) {
+            center.coordinates[d] = randGen->generateDouble();
+        }
+        startPoints.push_back(center);
+    }
+
+    // Generate training and testing data
+    trainData.clear();
+    testData.clear();
+    groundTruthLabels.clear();
+
+    for (int i = 0; i < numClusters; ++i) {
         for (int j = 0; j < numPointsPerCluster; ++j) {
-            Eigen::VectorXd noise = Eigen::VectorXd::Zero(numDimensions);
+            DataPoint point;
+            point.coordinates.resize(numDimensions);
             for (int d = 0; d < numDimensions; ++d) {
-                noise(d) = randGen.generateDouble() * standardDeviation;
+                double noise = randGen->generateNormal(0.0, standardDeviation);
+                point.coordinates[d] = startPoints[i].coordinates[d] + noise;
             }
-            trainData.row(index) = startPoint + noise;
-            testData.row(index) = startPoint + noise;
-            groundTruthLabels(index) = i;
-            ++index;
+            trainData.push_back(point);
+            testData.push_back(point); // For simplicity, using same data
+            groundTruthLabels.push_back(i);
         }
     }
 }
 
 void KMeans::computeGroundTruthError() {
     groundTruthError = 0.0;
-    for (int i = 0; i < trainData.rows(); ++i) {
+    for (const auto& point : trainData) {
         double minDist = std::numeric_limits<double>::max();
-        for (int j = 0; j < numClusters; ++j) {
-            double dist = (trainData.row(i) - startPoints.row(j)).squaredNorm();
+        for (const auto& center : startPoints) {
+            double dist = 0.0;
+            for (int d = 0; d < numDimensions; ++d) {
+                double diff = point.coordinates[d] - center.coordinates[d];
+                dist += diff * diff;
+            }
             if (dist < minDist) {
                 minDist = dist;
             }
@@ -64,13 +84,13 @@ void KMeans::computeGroundTruthError() {
     }
 }
 
-void KMeans::computeFriendMatrix(const Eigen::VectorXi &labels, Eigen::MatrixXi &friendMatrix) {
+void KMeans::computeFriendMatrix(const std::vector<int>& labels, std::vector<std::vector<int>>& friendMatrix) {
     int n = labels.size();
-    friendMatrix = Eigen::MatrixXi::Zero(n, n);
+    friendMatrix.resize(n, std::vector<int>(n, 0));
     for (int i = 0; i < n; ++i) {
         for (int j = 0; j < n; ++j) {
-            if (labels(i) == labels(j)) {
-                friendMatrix(i, j) = 1;
+            if (labels[i] == labels[j]) {
+                friendMatrix[i][j] = 1;
             }
         }
     }
@@ -78,54 +98,76 @@ void KMeans::computeFriendMatrix(const Eigen::VectorXi &labels, Eigen::MatrixXi 
 
 void KMeans::kMeansAlgorithm() {
     bestError = std::numeric_limits<double>::max();
-    QRandomGenerator randGen(QDateTime::currentMSecsSinceEpoch());
+    QRandomGenerator *randGen = QRandomGenerator::global();
+    double totalRuntime = 0.0;
 
     for (int init = 0; init < numInitializations; ++init) {
         // Initialize centroids
-        Eigen::MatrixXd centroids(numClusters, numDimensions);
+        std::vector<DataPoint> centroids(numClusters);
         for (int i = 0; i < numClusters; ++i) {
-            int idx = randGen.bounded(trainData.rows());
-            centroids.row(i) = trainData.row(idx);
+            int idx = randGen->bounded(static_cast<int>(trainData.size()));
+            centroids[i] = trainData[idx];
         }
 
-        Eigen::VectorXi labels(trainData.rows());
+        std::vector<int> labels(trainData.size(), -1);
         double prevError = std::numeric_limits<double>::max();
 
         for (int iter = 0; iter < 100; ++iter) {
             // Assign labels
-            for (int i = 0; i < trainData.rows(); ++i) {
+            for (size_t i = 0; i < trainData.size(); ++i) {
                 double minDist = std::numeric_limits<double>::max();
                 int minIdx = -1;
                 for (int j = 0; j < numClusters; ++j) {
-                    double dist = (trainData.row(i) - centroids.row(j)).squaredNorm();
+                    double dist = 0.0;
+                    for (int d = 0; d < numDimensions; ++d) {
+                        double diff = trainData[i].coordinates[d] - centroids[j].coordinates[d];
+                        dist += diff * diff;
+                    }
                     if (dist < minDist) {
                         minDist = dist;
                         minIdx = j;
                     }
                 }
-                labels(i) = minIdx;
+                labels[i] = minIdx;
             }
 
             // Update centroids
-            Eigen::MatrixXd newCentroids = Eigen::MatrixXd::Zero(numClusters, numDimensions);
-            Eigen::VectorXi counts = Eigen::VectorXi::Zero(numClusters);
-            for (int i = 0; i < trainData.rows(); ++i) {
-                newCentroids.row(labels(i)) += trainData.row(i);
-                counts(labels(i)) += 1;
-            }
+            std::vector<DataPoint> newCentroids(numClusters);
+            std::vector<int> counts(numClusters, 0);
+
             for (int i = 0; i < numClusters; ++i) {
-                if (counts(i) > 0) {
-                    newCentroids.row(i) /= counts(i);
+                newCentroids[i].coordinates.resize(numDimensions, 0.0);
+            }
+
+            for (size_t i = 0; i < trainData.size(); ++i) {
+                int label = labels[i];
+                for (int d = 0; d < numDimensions; ++d) {
+                    newCentroids[label].coordinates[d] += trainData[i].coordinates[d];
+                }
+                counts[label] += 1;
+            }
+
+            for (int i = 0; i < numClusters; ++i) {
+                if (counts[i] > 0) {
+                    for (int d = 0; d < numDimensions; ++d) {
+                        newCentroids[i].coordinates[d] /= counts[i];
+                    }
                 } else {
                     // Reinitialize empty centroid
-                    int idx = randGen.bounded(trainData.rows());
-                    newCentroids.row(i) = trainData.row(idx);
+                    int idx = randGen->bounded(static_cast<int>(trainData.size()));
+                    newCentroids[i] = trainData[idx];
                 }
             }
 
             double error = 0.0;
-            for (int i = 0; i < trainData.rows(); ++i) {
-                error += (trainData.row(i) - centroids.row(labels(i))).squaredNorm();
+            for (size_t i = 0; i < trainData.size(); ++i) {
+                int label = labels[i];
+                double dist = 0.0;
+                for (int d = 0; d < numDimensions; ++d) {
+                    double diff = trainData[i].coordinates[d] - centroids[label].coordinates[d];
+                    dist += diff * diff;
+                }
+                error += dist;
             }
 
             if (std::abs(prevError - error) < 1e-4) {
@@ -143,16 +185,23 @@ void KMeans::kMeansAlgorithm() {
     }
 
     // Compute similarity measure
-    Eigen::MatrixXi FGT, Ftrain, Fintersect;
+    std::vector<std::vector<int>> FGT, Ftrain, Fintersect;
     computeFriendMatrix(groundTruthLabels, FGT);
     computeFriendMatrix(bestLabels, Ftrain);
-    Fintersect = FGT.cwiseProduct(Ftrain);
 
-    double sumFGT = FGT.sum();
-    double sumFtrain = Ftrain.sum();
-    double sumFintersect = Fintersect.sum();
+    int n = groundTruthLabels.size();
+    Fintersect.resize(n, std::vector<int>(n, 0));
+    int sumFGT = 0, sumFtrain = 0, sumFintersect = 0;
+    for (int i = 0; i < n; ++i) {
+        for (int j = 0; j < n; ++j) {
+            Fintersect[i][j] = FGT[i][j] * Ftrain[i][j];
+            sumFGT += FGT[i][j];
+            sumFtrain += Ftrain[i][j];
+            sumFintersect += Fintersect[i][j];
+        }
+    }
 
-    similarityMeasure = (sumFintersect / sumFGT + sumFintersect / sumFtrain) / 2.0;
+    similarityMeasure = (static_cast<double>(sumFintersect) / sumFGT + static_cast<double>(sumFintersect) / sumFtrain) / 2.0;
 }
 
 double KMeans::getGroundTruthError() const {
@@ -172,17 +221,17 @@ void KMeans::plotClusters(QWidget *plotWidget) {
     QtCharts::QChartView *chartView = new QtCharts::QChartView(plotWidget);
     QtCharts::QChart *chart = new QtCharts::QChart();
 
-    QVector<QtCharts::QScatterSeries *> seriesList;
+    std::vector<QtCharts::QScatterSeries *> seriesList(numClusters);
     for (int i = 0; i < numClusters; ++i) {
         QtCharts::QScatterSeries *series = new QtCharts::QScatterSeries();
         series->setName(QString("Cluster %1").arg(i + 1));
-        seriesList.append(series);
+        seriesList[i] = series;
     }
 
-    for (int i = 0; i < trainData.rows(); ++i) {
-        int clusterIdx = bestLabels(i);
-        double x = trainData(i, 0);
-        double y = trainData(i, 1);
+    for (size_t i = 0; i < trainData.size(); ++i) {
+        int clusterIdx = bestLabels[i];
+        double x = trainData[i].coordinates[0];
+        double y = trainData[i].coordinates[1];
         seriesList[clusterIdx]->append(x, y);
     }
 
@@ -192,8 +241,14 @@ void KMeans::plotClusters(QWidget *plotWidget) {
 
     chart->createDefaultAxes();
     chart->setTitle("K-Means Clustering Result");
+    chart->legend()->setAlignment(Qt::AlignBottom);
     chartView->setChart(chart);
     chartView->setRenderHint(QPainter::Antialiasing);
+
+    // Clear previous layout if any
+    if (plotWidget->layout() != nullptr) {
+        delete plotWidget->layout();
+    }
 
     QHBoxLayout *layout = new QHBoxLayout(plotWidget);
     layout->addWidget(chartView);
